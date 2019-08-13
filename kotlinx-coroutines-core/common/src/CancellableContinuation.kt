@@ -224,11 +224,41 @@ public suspend inline fun <T> suspendAtomicCancellableCoroutine(
     }
 
 /**
+ *  Suspends coroutine similar to [suspendAtomicCancellableCoroutine], but an instance of [CancellableContinuationImpl] is reused if possible.
+ */
+public suspend inline fun <T> suspendAtomicCancellableCoroutineReusable(
+    crossinline block: (CancellableContinuation<T>) -> Unit
+): T =
+    suspendCoroutineUninterceptedOrReturn sc@ { uCont ->
+        val cancellable = getOrCreateCancellableContinuation(uCont.intercepted())
+        block(cancellable)
+        cancellable.getResult()
+    }
+
+@PublishedApi
+internal fun <T> getOrCreateCancellableContinuation(delegate: Continuation<T>): CancellableContinuationImpl<T> {
+    // If used outside of our dispatcher
+    if (delegate !is DispatchedContinuation<T>) {
+        return CancellableContinuationImpl(delegate, resumeMode = MODE_ATOMIC_DEFAULT)
+    }
+    // Try return reusable instance
+    val reusable = delegate.reusableCancellableContinuation
+    if (reusable != null) {
+        reusable.resetState()
+        return reusable
+    }
+    val cancellable = CancellableContinuationImpl(delegate, resumeMode = MODE_ATOMIC_DEFAULT)
+    if (delegate.canReuseCancellation()) delegate.reusableCancellableContinuation = cancellable
+    return cancellable
+}
+
+/**
  * @suppress **Deprecated**
  */
 @Deprecated(
     message = "holdCancellability parameter is deprecated and is no longer used",
-    replaceWith = ReplaceWith("suspendAtomicCancellableCoroutine(block)")
+    replaceWith = ReplaceWith("suspendAtomicCancellableCoroutine(block)"),
+    level = DeprecationLevel.ERROR
 )
 @InternalCoroutinesApi
 public suspend inline fun <T> suspendAtomicCancellableCoroutine(

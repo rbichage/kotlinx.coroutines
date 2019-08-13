@@ -102,6 +102,15 @@ public abstract class CoroutineDispatcher :
         DispatchedContinuation(this, continuation)
 
     /**
+     * TODO
+     */
+    @InternalCoroutinesApi
+    public override fun releaseInterceptedContinuation(continuation: Continuation<*>) {
+        // TODO make non-reusable ?
+        (continuation as DispatchedContinuation<*>).reusableCancellableContinuation?.detachChild()
+    }
+
+    /**
      * @suppress **Error**: Operator '+' on two CoroutineDispatcher objects is meaningless.
      * CoroutineDispatcher is a coroutine context element and `+` is a set-sum operator for coroutine contexts.
      * The dispatcher to the right of `+` just replaces the dispatcher the left of `+`.

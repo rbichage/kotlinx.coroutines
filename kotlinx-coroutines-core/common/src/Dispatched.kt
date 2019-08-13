@@ -11,6 +11,8 @@ import kotlin.jvm.*
 @Suppress("PrivatePropertyName")
 @SharedImmutable
 private val UNDEFINED = Symbol("UNDEFINED")
+@Suppress("PrivatePropertyName")
+private val NON_REUSABLE = Symbol("NON_REUSABLE")
 
 /**
  * Executes given [block] as part of current event loop, updating current continuation
@@ -84,6 +86,26 @@ internal class DispatchedContinuation<in T>(
     override fun getStackTraceElement(): StackTraceElement? = null
     @JvmField // pre-cached value to avoid ctx.fold on every resumption
     internal val countOrElement = threadContextElements(context)
+
+    private var _reusableCancellableContinuation: Any? = null // null | CancellableContinuationImpl | NON_REUSABLE
+
+    /**
+     * Holder for a reusable instance of cancellable continuation.
+     * See [suspendAtomicCancellableCoroutineReusable]
+     */
+    @Suppress("UNCHECKED_CAST", "TYPE_VARIANCE_CONFLICT")
+    internal var reusableCancellableContinuation: CancellableContinuationImpl<T>?
+        get() = _reusableCancellableContinuation as? CancellableContinuationImpl<T>
+        set(value) {
+            require(_reusableCancellableContinuation !== NON_REUSABLE)
+            _reusableCancellableContinuation = value
+        }
+
+    internal fun makeCancellationNonReusable() {
+        _reusableCancellableContinuation = NON_REUSABLE
+    }
+
+    internal fun canReuseCancellation(): Boolean = _reusableCancellableContinuation !== NON_REUSABLE
 
     override fun takeState(): Any? {
         val state = _state

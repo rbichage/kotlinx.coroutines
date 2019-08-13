@@ -78,10 +78,27 @@ internal open class CancellableContinuationImpl<in T>(
         // This method does nothing. Leftover for binary compatibility with old compiled code
     }
 
+    private fun invalidateReusability() {
+        (delegate as? DispatchedContinuation<*>)?.makeCancellationNonReusable()
+    }
+
+    private fun isReusable(): Boolean = delegate is DispatchedContinuation<*> && delegate.reusableCancellableContinuation === this
+
+    /**
+     * Resets cancellability state in order to [suspendAtomicCancellableCoroutineReusable] to work.
+     * Invariant: used only from [suspendAtomicCancellableCoroutineReusable] iff [isReusable] is `true`
+     */
+    internal fun resetState() {
+        require(parentHandle !== NonDisposableHandle)
+        _state.value = Active
+        _decision.value = UNDECIDED
+    }
+
     // It is only invoked from an internal getResult function, so we can be sure it is not invoked twice
     private fun installParentCancellationHandler() {
         if (isCompleted) return // fast path 1 -- don't need to do anything if already completed
-        val parent = delegate.context[Job] ?: return // fast path 2 -- don't do anything without parent
+        if (isReusable() && parentHandle !== null) return // fast path 2 -- was already initialized
+        val parent = delegate.context[Job] ?: return // fast path 3 -- don't do anything without parent
         parent.start() // make sure the parent is started
         val handle = parent.invokeOnCompletion(
             onCancelling = true,
@@ -89,7 +106,7 @@ internal open class CancellableContinuationImpl<in T>(
         )
         parentHandle = handle
         // now check our state _after_ registering (could have completed while we were registering)
-        if (isCompleted) {
+        if (!isReusable() && isCompleted) {
             handle.dispose() // it is Ok to call dispose twice -- here and in disposeParentHandle
             parentHandle = NonDisposableHandle // release it just in case, to aid GC
         }
@@ -111,6 +128,7 @@ internal open class CancellableContinuationImpl<in T>(
     }
 
     public override fun cancel(cause: Throwable?): Boolean {
+        invalidateReusability()
         _state.loop { state ->
             if (state !is NotCompleted) return false // false if already complete or cancelling
             // Active -- update to final state
@@ -279,13 +297,30 @@ internal open class CancellableContinuationImpl<in T>(
 
     // Unregister from parent job
     private fun disposeParentHandle() {
+        // If instance is reusable, do not detach on every reuse, #releaseInterceptedContinuation
+        // will do it for us in the end
+        if (isReusable()) return
         parentHandle?.let { // volatile read parentHandle (once)
             it.dispose()
             parentHandle = NonDisposableHandle // release it just in case, to aid GC
         }
     }
 
+    /**
+     * Detaches from the parent.
+     * Invariant: used used from [CoroutineDispatcher.releaseInterceptedContinuation] iff [isReusable] is `true`
+     */
+    internal fun detachChild() {
+        val handle = parentHandle
+        handle?.dispose()
+        parentHandle = NonDisposableHandle
+    }
+
     override fun tryResume(value: T, idempotent: Any?): Any? {
+        // Important invariant: if idempotent tryResume is used, then regular resume cannot be used, since the
+        // thread that invokes this tryResume install its descriptor into the pointer to the corresponding node first,
+        // so no other thread can find it and invoke resume.
+        if (idempotent != null) invalidateReusability()
         _state.loop { state ->
             when (state) {
                 is NotCompleted -> {
